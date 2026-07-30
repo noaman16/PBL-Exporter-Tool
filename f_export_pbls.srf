@@ -1,0 +1,136 @@
+﻿$PBExportHeader$f_export_pbls.srf
+$PBExportComments$Bulk-export all objects from a project's PBLs to source files
+global type f_export_pbls from function_object
+end type
+
+forward prototypes
+global function integer f_export_pbls (string as_target, string as_exportdir)
+end prototypes
+
+global function integer f_export_pbls (string as_target, string as_exportdir);// f_export_pbls: export every object from every PBL in a target to source files.
+// as_target    = full path to the .pbt (or .pbw), OR a ';'-separated list of .pbl paths
+// as_exportdir = output root; creates <exportdir>\<pbl>.pbl.src\<object>.<ext>
+// Returns number of objects exported (-1 on error).
+string  ls_text, ls_line, ls_libList, ls_libs[], ls_baseDir, ls_pblPath, ls_pblBase
+string  ls_dir, ls_name, ls_src, ls_outDir, ls_outFile
+integer li_file
+long    ll_total, ll_i, ll_t, ll_p, ll_start, ll_libCount
+LibDirType     lde[10]
+LibExportType  lee[10]
+string         lext[10]
+
+lde[1]=DirApplication!;  lee[1]=ExportApplication!;  lext[1]='sra'
+lde[2]=DirWindow!;       lee[2]=ExportWindow!;       lext[2]='srw'
+lde[3]=DirUserObject!;   lee[3]=ExportUserObject!;   lext[3]='sru'
+lde[4]=DirDataWindow!;   lee[4]=ExportDataWindow!;   lext[4]='srd'
+lde[5]=DirMenu!;         lee[5]=ExportMenu!;         lext[5]='srm'
+lde[6]=DirFunction!;     lee[6]=ExportFunction!;     lext[6]='srf'
+lde[7]=DirStructure!;    lee[7]=ExportStructure!;    lext[7]='srs'
+lde[8]=DirQuery!;        lee[8]=ExportQuery!;        lext[8]='srq'
+lde[9]=DirPipeline!;     lee[9]=ExportPipeline!;     lext[9]='srp'
+lde[10]=DirProject!;     lee[10]=ExportProject!;     lext[10]='srj'
+
+// --- resolve the list of PBLs ---
+if right(lower(as_target),4)='.pbt' or right(lower(as_target),4)='.pbw' then
+	li_file = FileOpen(as_target, LineMode!, Read!, LockRead!)
+	if li_file < 0 then
+		MessageBox('Export','Cannot open target: ' + as_target)
+		return -1
+	end if
+	do while FileReadEx(li_file, ls_line) >= 0
+		if Pos(ls_line,'LibList') > 0 then
+			ll_start = Pos(ls_line,'"') + 1
+			ll_p = Pos(ls_line,'"', ll_start)
+			ls_libList = Mid(ls_line, ll_start, ll_p - ll_start)
+			exit
+		end if
+	loop
+	FileClose(li_file)
+	ll_p = LastPos(as_target,'\')
+	ls_baseDir = Left(as_target, ll_p)
+else
+	ls_libList = as_target
+	ls_baseDir = ''
+end if
+
+// --- split libList on ';' ---
+ll_libCount = 0
+ls_libList = trim(ls_libList)
+do while len(ls_libList) > 0
+	ll_p = Pos(ls_libList,';')
+	if ll_p > 0 then
+		ls_line = trim(Left(ls_libList, ll_p - 1))
+		ls_libList = Mid(ls_libList, ll_p + 1)
+	else
+		ls_line = trim(ls_libList)
+		ls_libList = ''
+	end if
+	if len(ls_line) > 0 and right(lower(ls_line),4) = '.pbl' then
+		ll_libCount ++
+		ls_libs[ll_libCount] = ls_line
+	end if
+loop
+
+if ll_libCount = 0 then
+	MessageBox('Export','No .pbl found in target/list.')
+	return -1
+end if
+
+if right(as_exportdir,1) <> '\' then as_exportdir = as_exportdir + '\'
+if not DirectoryExists(as_exportdir) then CreateDirectory(as_exportdir)
+
+// --- export each PBL ---
+ll_total = 0
+for ll_i = 1 to ll_libCount
+	if Pos(ls_libs[ll_i],':') > 0 or Left(ls_libs[ll_i],2) = '\\' then
+		ls_pblPath = ls_libs[ll_i]
+	else
+		ls_pblPath = ls_baseDir + ls_libs[ll_i]
+	end if
+	if not FileExists(ls_pblPath) then continue
+
+	ll_p = LastPos(ls_pblPath,'\')
+	ls_pblBase = Mid(ls_pblPath, ll_p + 1)
+	ls_pblBase = Left(ls_pblBase, len(ls_pblBase) - 4)
+	ls_outDir = as_exportdir + ls_pblBase + '.pbl.src\'
+	if not DirectoryExists(ls_outDir) then CreateDirectory(ls_outDir)
+
+	for ll_t = 1 to 10
+		ls_dir = LibraryDirectory(ls_pblPath, lde[ll_t])
+		if IsNull(ls_dir) or len(ls_dir) = 0 then continue
+		do while len(ls_dir) > 0
+			ll_p = Pos(ls_dir,'~n')
+			if ll_p > 0 then
+				ls_line = Left(ls_dir, ll_p - 1)
+				ls_dir = Mid(ls_dir, ll_p + 1)
+			else
+				ls_line = ls_dir
+				ls_dir = ''
+			end if
+			ll_p = Pos(ls_line,'~t')
+			if ll_p > 0 then
+				ls_name = Left(ls_line, ll_p - 1)
+			else
+				ls_name = ls_line
+			end if
+			ls_name = trim(ls_name)
+			if len(ls_name) = 0 then continue
+
+			ls_src = LibraryExport(ls_pblPath, ls_name, lee[ll_t])
+			if IsNull(ls_src) or len(ls_src) = 0 then continue
+
+			ls_outFile = ls_outDir + ls_name + '.' + lext[ll_t]
+			li_file = FileOpen(ls_outFile, StreamMode!, Write!, LockWrite!, Replace!, EncodingUTF16LE!)
+			if li_file >= 0 then
+				FileWriteEx(li_file, ls_src)
+				FileClose(li_file)
+				ll_total ++
+			end if
+		loop
+	next
+next
+
+MessageBox('Export complete', String(ll_total) + ' objects exported to:~r~n' + as_exportdir)
+return ll_total
+end function
+
