@@ -4,17 +4,25 @@ global type f_export_pbls from function_object
 end type
 
 forward prototypes
-global function integer f_export_pbls (string as_target, string as_exportdir)
+global function long f_export_pbls (string as_target, string as_exportdir, boolean ab_silent)
 end prototypes
 
-global function integer f_export_pbls (string as_target, string as_exportdir);// f_export_pbls: export every object from every PBL in a target to source files.
-// as_target    = full path to the .pbt (or .pbw), OR a ';'-separated list of .pbl paths
-// as_exportdir = output root; creates <exportdir>\<pbl>.pbl.src\<object>.<ext>
+global function long f_export_pbls (string as_target, string as_exportdir, boolean ab_silent);// f_export_pbls: export every object from every PBL of a project to source files.
+// as_target    = the project FOLDER (its .pbt is found automatically; if the folder has no
+//                .pbt, every .pbl in it is exported), OR a .pbt / .pbw path,
+//                OR a ';'-separated list of .pbl paths
+// as_exportdir = output root; '' = <project folder>\WS_OBJECTS
+//                creates <exportdir>\<pbl>.pbl.src\<object>.<ext>
+// ab_silent    = true: no message boxes (command-line use); result goes to <exportdir>\pblexport.log
 // Returns number of objects exported (-1 on error).
-string  ls_text, ls_line, ls_libList, ls_libs[], ls_baseDir, ls_pblPath, ls_pblBase
-string  ls_dir, ls_name, ls_src, ls_outDir, ls_outFile
+string  ls_libs[], ls_pbts[], ls_found[], ls_baseDir, ls_pblPath, ls_pblBase
+string  ls_line, ls_libList, ls_dir, ls_name, ls_src, ls_outDir, ls_outFile
+string  ls_keep, ls_log, ls_err, ls_lower, ls_ext, ls_comment
 integer li_file
-long    ll_total, ll_i, ll_t, ll_p, ll_start, ll_libCount
+long    ll_total, ll_i, ll_j, ll_t, ll_p, ll_start, ll_libCount, ll_n
+long    ll_pblCount, ll_pblObjs, ll_removed, ll_failed
+boolean lb_dup
+n_pblexport_dir lnv_dir
 LibDirType     lde[10]
 LibExportType  lee[10]
 string         lext[10]
@@ -30,75 +38,150 @@ lde[8]=DirQuery!;        lee[8]=ExportQuery!;        lext[8]='srq'
 lde[9]=DirPipeline!;     lee[9]=ExportPipeline!;     lext[9]='srp'
 lde[10]=DirProject!;     lee[10]=ExportProject!;     lext[10]='srj'
 
+lnv_dir = create n_pblexport_dir
+
+// --- tidy the arguments (quotes, trailing backslash) ---
+as_target = Trim(as_target)
+if Left(as_target,1) = '"' then as_target = Mid(as_target,2)
+if Right(as_target,1) = '"' then as_target = Left(as_target, Len(as_target) - 1)
+do while Right(as_target,1) = '\' and Len(as_target) > 3
+	as_target = Left(as_target, Len(as_target) - 1)
+loop
+as_exportdir = Trim(as_exportdir)
+if Left(as_exportdir,1) = '"' then as_exportdir = Mid(as_exportdir,2)
+if Right(as_exportdir,1) = '"' then as_exportdir = Left(as_exportdir, Len(as_exportdir) - 1)
+
+// a workspace file just means "the folder it lives in"
+if Right(Lower(as_target),4) = '.pbw' and LastPos(as_target,'\') > 0 then
+	as_target = Left(as_target, LastPos(as_target,'\') - 1)
+end if
+ls_lower = Lower(as_target)
+
 // --- resolve the list of PBLs ---
-if right(lower(as_target),4)='.pbt' or right(lower(as_target),4)='.pbw' then
-	li_file = FileOpen(as_target, LineMode!, Read!, LockRead!)
+if DirectoryExists(as_target) then
+	ls_baseDir = as_target
+	if Right(ls_baseDir,1) <> '\' then ls_baseDir = ls_baseDir + '\'
+	ll_n = lnv_dir.of_list(ls_baseDir + '*.pbt', ls_pbts)
+	for ll_i = 1 to ll_n
+		ls_pbts[ll_i] = ls_baseDir + ls_pbts[ll_i]
+	next
+	if ll_n = 0 then
+		// no target file: take every PBL in the folder
+		ll_n = lnv_dir.of_list(ls_baseDir + '*.pbl', ls_found)
+		for ll_i = 1 to ll_n
+			ls_libList = ls_libList + ls_found[ll_i] + ';'
+		next
+	end if
+elseif Right(ls_lower,4) = '.pbt' then
+	if FileExists(as_target) then
+		ls_baseDir = Left(as_target, LastPos(as_target,'\'))
+		ls_pbts[1] = as_target
+	else
+		ls_err = 'Target not found: ' + as_target
+	end if
+elseif Pos(ls_lower,'.pbl') > 0 then
+	ls_libList = as_target
+	ls_baseDir = ''
+else
+	ls_err = 'Folder or target not found: ' + as_target
+end if
+
+// read the LibList line of each .pbt
+for ll_i = 1 to UpperBound(ls_pbts)
+	li_file = FileOpen(ls_pbts[ll_i], LineMode!, Read!, LockRead!)
 	if li_file < 0 then
-		MessageBox('Export','Cannot open target: ' + as_target)
-		return -1
+		ls_err = 'Cannot open target: ' + ls_pbts[ll_i]
+		exit
 	end if
 	do while FileReadEx(li_file, ls_line) >= 0
-		if Pos(ls_line,'LibList') > 0 then
+		if Left(Lower(Trim(ls_line)),7) = 'liblist' then
 			ll_start = Pos(ls_line,'"') + 1
 			ll_p = Pos(ls_line,'"', ll_start)
-			ls_libList = Mid(ls_line, ll_start, ll_p - ll_start)
+			if ll_start > 1 and ll_p > ll_start then
+				ls_libList = ls_libList + Mid(ls_line, ll_start, ll_p - ll_start) + ';'
+			end if
 			exit
 		end if
 	loop
 	FileClose(li_file)
-	ll_p = LastPos(as_target,'\')
-	ls_baseDir = Left(as_target, ll_p)
-else
-	ls_libList = as_target
-	ls_baseDir = ''
-end if
+next
 
-// --- split libList on ';' ---
+// --- split libList on ';' (keep .pbl only, drop duplicates) ---
 ll_libCount = 0
-ls_libList = trim(ls_libList)
-do while len(ls_libList) > 0
+do while Len(ls_libList) > 0 and ls_err = ''
 	ll_p = Pos(ls_libList,';')
 	if ll_p > 0 then
-		ls_line = trim(Left(ls_libList, ll_p - 1))
+		ls_line = Trim(Left(ls_libList, ll_p - 1))
 		ls_libList = Mid(ls_libList, ll_p + 1)
 	else
-		ls_line = trim(ls_libList)
+		ls_line = Trim(ls_libList)
 		ls_libList = ''
 	end if
-	if len(ls_line) > 0 and right(lower(ls_line),4) = '.pbl' then
-		ll_libCount ++
-		ls_libs[ll_libCount] = ls_line
-	end if
+	// .pbt files store '\' as '\\'
+	ll_p = Pos(ls_line,'\\', 2)
+	do while ll_p > 0
+		ls_line = Replace(ls_line, ll_p, 2, '\')
+		ll_p = Pos(ls_line,'\\', ll_p + 1)
+	loop
+	if Len(ls_line) = 0 or Right(Lower(ls_line),4) <> '.pbl' then continue
+	lb_dup = false
+	for ll_j = 1 to ll_libCount
+		if Lower(ls_libs[ll_j]) = Lower(ls_line) then lb_dup = true
+	next
+	if lb_dup then continue
+	ll_libCount ++
+	ls_libs[ll_libCount] = ls_line
 loop
 
-if ll_libCount = 0 then
-	MessageBox('Export','No .pbl found in target/list.')
-	return -1
-end if
+if ls_err = '' and ll_libCount = 0 then ls_err = 'No .pbl found for: ' + as_target
 
-if right(as_exportdir,1) <> '\' then as_exportdir = as_exportdir + '\'
-if not DirectoryExists(as_exportdir) then CreateDirectory(as_exportdir)
+// --- output folder (default <project folder>\WS_OBJECTS) ---
+if as_exportdir = '' and ls_baseDir <> '' then as_exportdir = ls_baseDir + 'WS_OBJECTS'
+if as_exportdir = '' then
+	if ls_err = '' then ls_err = 'No export folder given.'
+else
+	if Right(as_exportdir,1) <> '\' then as_exportdir = as_exportdir + '\'
+	// create the folder, one level at a time
+	ll_p = Pos(as_exportdir,'\', 4)
+	do while ll_p > 0
+		ls_dir = Left(as_exportdir, ll_p - 1)
+		if not DirectoryExists(ls_dir) then CreateDirectory(ls_dir)
+		ll_p = Pos(as_exportdir,'\', ll_p + 1)
+	loop
+	if ls_err = '' and not DirectoryExists(Left(as_exportdir, Len(as_exportdir) - 1)) then
+		ls_err = 'Cannot create export folder: ' + as_exportdir
+	end if
+end if
 
 // --- export each PBL ---
 ll_total = 0
 for ll_i = 1 to ll_libCount
+	if ls_err <> '' then exit
+
 	if Pos(ls_libs[ll_i],':') > 0 or Left(ls_libs[ll_i],2) = '\\' then
 		ls_pblPath = ls_libs[ll_i]
 	else
 		ls_pblPath = ls_baseDir + ls_libs[ll_i]
 	end if
-	if not FileExists(ls_pblPath) then continue
+	if not FileExists(ls_pblPath) then
+		ls_log = ls_log + 'MISSING  ' + ls_pblPath + '~r~n'
+		continue
+	end if
 
 	ll_p = LastPos(ls_pblPath,'\')
 	ls_pblBase = Mid(ls_pblPath, ll_p + 1)
-	ls_pblBase = Left(ls_pblBase, len(ls_pblBase) - 4)
+	ls_pblBase = Left(ls_pblBase, Len(ls_pblBase) - 4)
 	ls_outDir = as_exportdir + ls_pblBase + '.pbl.src\'
 	if not DirectoryExists(ls_outDir) then CreateDirectory(ls_outDir)
 
+	ll_pblCount ++
+	ll_pblObjs = 0
+	ls_keep = '|'
+
 	for ll_t = 1 to 10
 		ls_dir = LibraryDirectory(ls_pblPath, lde[ll_t])
-		if IsNull(ls_dir) or len(ls_dir) = 0 then continue
-		do while len(ls_dir) > 0
+		if IsNull(ls_dir) then continue
+		do while Len(ls_dir) > 0
 			ll_p = Pos(ls_dir,'~n')
 			if ll_p > 0 then
 				ls_line = Left(ls_dir, ll_p - 1)
@@ -107,30 +190,101 @@ for ll_i = 1 to ll_libCount
 				ls_line = ls_dir
 				ls_dir = ''
 			end if
+			// directory line = name <tab> modified date <tab> comments
+			if Right(ls_line,1) = '~r' then ls_line = Left(ls_line, Len(ls_line) - 1)
+			ls_comment = ''
 			ll_p = Pos(ls_line,'~t')
 			if ll_p > 0 then
 				ls_name = Left(ls_line, ll_p - 1)
+				ll_p = Pos(ls_line,'~t', ll_p + 1)
+				if ll_p > 0 then ls_comment = Mid(ls_line, ll_p + 1)
+				do while Right(ls_comment,1) = '~t' or Right(ls_comment,1) = ' '
+					ls_comment = Left(ls_comment, Len(ls_comment) - 1)
+				loop
 			else
 				ls_name = ls_line
 			end if
-			ls_name = trim(ls_name)
-			if len(ls_name) = 0 then continue
+			ls_name = Trim(ls_name)
+			if Len(ls_name) = 0 then continue
 
 			ls_src = LibraryExport(ls_pblPath, ls_name, lee[ll_t])
-			if IsNull(ls_src) or len(ls_src) = 0 then continue
+			if IsNull(ls_src) or Len(ls_src) = 0 then
+				ll_failed ++
+				ls_log = ls_log + 'FAILED   ' + ls_pblBase + '.pbl : ' + ls_name + '.' + lext[ll_t] + '~r~n'
+				continue
+			end if
 
+			// LibraryExport returns the bare source; add the header lines the IDE's own
+			// export writes, so the file can be imported back with Entry > Import
+			if Left(ls_src,16) <> '$PBExportHeader$' then
+				if ls_comment <> '' then ls_src = '$PBExportComments$' + ls_comment + '~r~n' + ls_src
+				ls_src = '$PBExportHeader$' + ls_name + '.' + lext[ll_t] + '~r~n' + ls_src
+			end if
+
+			// UTF-8 (with BOM): shows as text in git diffs and re-imports into PowerBuilder
 			ls_outFile = ls_outDir + ls_name + '.' + lext[ll_t]
-			li_file = FileOpen(ls_outFile, StreamMode!, Write!, LockWrite!, Replace!, EncodingUTF16LE!)
+			li_file = FileOpen(ls_outFile, TextMode!, Write!, LockWrite!, Replace!, EncodingUTF8!)
 			if li_file >= 0 then
 				FileWriteEx(li_file, ls_src)
 				FileClose(li_file)
 				ll_total ++
+				ll_pblObjs ++
+				ls_keep = ls_keep + Lower(ls_name + '.' + lext[ll_t]) + '|'
+			else
+				ll_failed ++
+				ls_log = ls_log + 'FAILED   cannot write ' + ls_outFile + '~r~n'
 			end if
 		loop
 	next
+
+	// remove source files of objects that no longer exist in this PBL
+	if ll_pblObjs > 0 then
+		ll_n = lnv_dir.of_list(ls_outDir + '*.sr?', ls_found)
+		for ll_j = 1 to ll_n
+			ls_ext = Mid(ls_found[ll_j], LastPos(ls_found[ll_j],'.'))
+			if Len(ls_ext) <> 4 then continue
+			if Pos(ls_keep, '|' + Lower(ls_found[ll_j]) + '|') = 0 then
+				if FileDelete(ls_outDir + ls_found[ll_j]) then
+					ll_removed ++
+					ls_log = ls_log + 'REMOVED  ' + ls_pblBase + '.pbl.src\' + ls_found[ll_j] + '~r~n'
+				end if
+			end if
+		next
+	end if
+
+	ls_log = ls_log + 'OK       ' + ls_pblBase + '.pbl : ' + String(ll_pblObjs) + ' objects~r~n'
 next
 
-MessageBox('Export complete', String(ll_total) + ' objects exported to:~r~n' + as_exportdir)
+destroy lnv_dir
+
+// --- report ---
+if ls_err <> '' then
+	ls_log = ls_log + 'ERROR    ' + ls_err + '~r~n'
+	ll_total = -1
+else
+	ls_log = ls_log + String(ll_total) + ' objects exported from ' + String(ll_pblCount) + ' PBLs to ' + as_exportdir &
+		+ ' (' + String(ll_removed) + ' stale files removed, ' + String(ll_failed) + ' failed)~r~n'
+end if
+
+if as_exportdir <> '' then
+	if DirectoryExists(Left(as_exportdir, Len(as_exportdir) - 1)) then
+		li_file = FileOpen(as_exportdir + 'pblexport.log', TextMode!, Write!, LockWrite!, Replace!, EncodingUTF8!)
+		if li_file >= 0 then
+			FileWriteEx(li_file, String(Today(),'yyyy-mm-dd') + ' ' + String(Now(),'hh:mm:ss') + '  ' + as_target + '~r~n' + ls_log)
+			FileClose(li_file)
+		end if
+	end if
+end if
+
+if not ab_silent then
+	if ls_err <> '' then
+		MessageBox('Export', ls_err, StopSign!)
+	else
+		MessageBox('Export complete', String(ll_total) + ' objects exported from ' + String(ll_pblCount) + ' PBLs to:~r~n' &
+			+ as_exportdir + '~r~n~r~nStale files removed: ' + String(ll_removed) + '~r~nFailed: ' + String(ll_failed))
+	end if
+end if
+
 return ll_total
 end function
 

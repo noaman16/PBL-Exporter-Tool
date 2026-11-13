@@ -1,0 +1,18 @@
+$PBExportHeader$s_pblexport_finddata.srs
+$PBExportComments$WIN32_FIND_DATAW layout used by n_pblexport_dir to list files
+global type s_pblexport_finddata from structure
+	unsignedlong		fileattributes
+	unsignedlong		creationtime_lo
+	unsignedlong		creationtime_hi
+	unsignedlong		accesstime_lo
+	unsignedlong		accesstime_hi
+	unsignedlong		writetime_lo
+	unsignedlong		writetime_hi
+	unsignedlong		filesize_hi
+	unsignedlong		filesize_lo
+	unsignedlong		reserved0
+	unsignedlong		reserved1
+	character		filename[260]
+	character		altname[14]
+end type
+

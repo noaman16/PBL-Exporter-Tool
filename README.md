@@ -1,36 +1,85 @@
 # PBL Export Tool (`pblexport`)
 
 A small PowerBuilder 2019 utility that **bulk-exports every object from every PBL** in a project
-to individual source files (`.srw`, `.sru`, `.srd`, `.srf`, …) — the same layout the IDE's manual
-"Export" produces, but for the whole project at once instead of one object at a time.
+to individual source files (`.srw`, `.sru`, `.srd`, `.srf`, …), so the code can be diffed and
+committed as text.
 
-Built because exporting objects one-by-one from the Library painter is slow. Point it at a project
-target and an output folder, and it exports everything.
+Give it the project folder. It finds the `.pbt`, reads its library list and exports everything.
+
+---
+
+## How to use
+
+### With the window
+
+Double-click `pblexport.exe`. The **PBL Export** window asks for two paths:
+
+| Field | What to pick |
+|-------|--------------|
+| **POS Path** | The project folder (the one with the `.pbt` and `.pbl` files). |
+| **POS Export Path** | Where the source files are written. Filled in as `<POS Path>\WS_OBJECTS` when you pick the POS path; change it with **Select path** or by typing. |
+
+Click **Export**. A message box shows the totals, and the same summary stays at the bottom of the
+window. You can change the paths and export again without closing it.
+
+### From the command line
+
+```
+pblexport.exe "<project folder>" ["<export folder>"]
+```
+
+| Argument | Meaning |
+|----------|---------|
+| `<project folder>` | Folder that holds the `.pbt` and `.pbl` files. A `.pbt` path also works. |
+| `<export folder>` | Optional. Default is `<project folder>\WS_OBJECTS`. |
+
+Examples:
+
+```
+pblexport.exe "E:\new-setup-pos\2012R2\VVG-POS"
+pblexport.exe "E:\new-setup-pos\2012R2\VVG-POS" "E:\VVG-POS-USA19-SRC"
+```
+
+With arguments it runs silently (no dialogs) and writes the result to
+`<export folder>\pblexport.log`: one line per PBL, then a total. Check the last line of the log:
+
+```
+OK       payment.pbl : 52 objects
+...
+353 objects exported from 17 PBLs to E:\...\WS_OBJECTS\ (0 stale files removed, 0 failed)
+```
 
 ---
 
 ## What it produces
 
-For a target whose `LibList` contains, say, `app.pbl;module1.pbl;module2.pbl;…`, running
-the tool with output folder `C:\export` creates:
-
 ```
-C:\export\
-   app.pbl.src\
-      f_myfunction.srf
-      n_myobject.sru
+<export folder>\
+   vvgmobile.pbl.src\
+      vvgmobile.sra
       w_main.srw
       ...
-   module1.pbl.src\
-      w_orders.srw
-      ...
-   module2.pbl.src\
+   payment.pbl.src\
       d_customers.srd
       ...
+   pblexport.log
 ```
 
-Each file is written in **UTF-16LE** (the same encoding PowerBuilder uses for native exports), so
-the files re-import cleanly with `Entry → Import`.
+- **One folder per PBL**, one file per object.
+- **UTF-8 with BOM**, CRLF line endings. Git shows these as text diffs, and PowerBuilder imports
+  them with `Entry → Import`.
+- Each file starts with `$PBExportHeader$` (and `$PBExportComments$` when the object has a
+  comment), the same as an export from the Library painter.
+- **Stale files are removed.** If an object was deleted from a PBL, its old `.sr?` file in that
+  PBL's folder is deleted, so the folder always mirrors the PBL. Other files are left alone.
+- Existing files for the same object are overwritten.
+
+Which PBLs are exported:
+
+- Folder with a `.pbt`: the `.pbl` entries of its `LibList` (`.pbd` entries are skipped).
+- Folder without a `.pbt`: every `.pbl` in the folder.
+- A `;`-separated list of `.pbl` paths can be passed instead of a folder; the export folder is
+  then required.
 
 ---
 
@@ -49,90 +98,16 @@ the files re-import cleanly with `Entry → Import`.
 | Pipeline | `.srp` |
 | Project | `.srj` |
 
-> Proxy objects (`.srx`) are intentionally **not** exported — the PB 2019 enum for them differs and
-> they are not used in the target applications. Add them back only if a project actually contains
-> proxy objects.
+Proxy objects (`.srx`) are not exported.
 
 ---
 
-## How it works
+## Requirements
 
-The tool is a tiny standalone PowerBuilder application made of just two objects:
-
-1. **`pblexport` (application object, `.sra`)** — its `open` event:
-   - Prompts for a project **`.pbt`** file via `GetFileOpenName()`.
-   - Prompts for an **export folder** via `GetFolder()`.
-   - Calls `f_export_pbls(...)`, then exits (`Halt Close`).
-
-2. **`f_export_pbls` (global function, `.srf`)** — the engine:
-   - `as_target`  = full path to the `.pbt`/`.pbw` **or** a `;`-separated list of `.pbl` paths.
-   - `as_exportdir` = output root folder.
-   - Reads the `LibList "..."` line from the target file to get every `.pbl`.
-   - For each `.pbl`, for each object type, it calls the built-in
-     **`LibraryDirectory()`** (to list objects of that type) and
-     **`LibraryExport()`** (to get each object's source), and writes the source file.
-   - Returns the number of objects exported.
-
-Because it uses the built-in `LibraryDirectory` / `LibraryExport` functions, it works on **any**
-`.pbl` by path and needs no ORCA DLL, no source control, and no special setup.
-
----
-
-## One-time setup (import into PowerBuilder 2019)
-
-The two source files live in `E:\pblexport_import\`:
-`pblexport.sra` and `f_export_pbls.srf`.
-
-1. **File → New → Workspace** → create a workspace (e.g. `pbltools`).
-2. **File → New → Target → Application** → name it `pblexport`, library `pblexport.pbl`, Finish.
-3. **Tools → Library** → select `pblexport.pbl` → **Entry → Import…** → select **both**
-   `pblexport.sra` and `f_export_pbls.srf` → **Open** → **Yes/Replace** for the app object.
-4. Right-click `pblexport.pbl` → **Regenerate**. The Errors tab should be clean.
-
-> If replacing the app object during import is awkward, import only `f_export_pbls.srf`, then open
-> the generated `pblexport` app object and paste the `open`-event code from `pblexport.sra` into it.
-
----
-
-## How to use
-
-### Run from the IDE (quickest)
-1. Make sure `pblexport` is the active target (bold in the System Tree).
-2. Press **Ctrl+R** (Run).
-3. **Select Project Target (.pbt)** → choose the project you want to export
-   (e.g. `C:\projects\myapp\myapp.pbt`).
-4. **Select Export Folder** → choose the output folder (e.g. `E:\export`).
-5. It exports and shows **"Export complete — N objects exported."**
-
-### Run as a standalone `.exe` (reuse without the IDE)
-1. **File → New → Project → Application** wizard.
-2. Set **Executable File Name** = `pblexport.exe`, **Pcode**, **Platform: 32-bit**.
-3. Save the project, right-click it → **Deploy** to build `pblexport.exe`.
-4. Ship the exe with the matching **32-bit PB Runtime** (the same runtime version your application uses).
-5. Double-click `pblexport.exe` → pick a `.pbt` → pick a folder → done.
-
----
-
-## Notes & limitations
-
-- **Output encoding:** UTF-16LE (matches native PB export) — files re-import cleanly.
-- **Bitness:** run it under the same PB runtime bitness as the objects you're exporting
-  (typically **32-bit**, matching the IDE and the deployed application).
-- **Overwrites:** existing files in the target folder for the same object are replaced.
-- **No proxy objects** (`.srx`) — see the note above.
-- The tool reads the PBL list from the target's `LibList`; if you pass a `;`-separated list of
-  `.pbl` paths as the first argument instead of a `.pbt`, it will use that list directly.
-
----
-
-## Troubleshooting
-
-| Symptom | Fix |
-|---------|-----|
-| `C0060 Illegal enumerated constant` on compile | An object-type enum name is wrong for this PB build — remove/adjust that row in `f_export_pbls`. (Proxy was already removed for this reason.) |
-| "No .pbl found in target/list" | The `.pbt` had no readable `LibList`, or the path passed wasn't a `.pbt`/`.pbw`/`.pbl` list. Check the target path. |
-| Some objects missing | They may be a type not in the 10 handled (e.g. proxy). Add the type's `DirXxx!`/`ExportXxx!`/extension row. |
-| Exported files won't re-import | Confirm they are UTF-16LE and start with `$PBExportHeader$` — the tool writes this automatically. |
+- **32-bit PowerBuilder 2019 R3 runtime** (19.2.0.2803). `pblexport.xml`, next to the exe, points
+  at the runtime folder; edit it if the runtime is installed somewhere else.
+- The PBLs must be PowerBuilder 2019 format or older.
+- The PowerBuilder IDE can stay open while exporting.
 
 ---
 
@@ -140,8 +115,30 @@ The two source files live in `E:\pblexport_import\`:
 
 | File | Purpose |
 |------|---------|
-| `pblexport.sra` | Application object — prompts for paths, calls the engine |
-| `f_export_pbls.srf` | Global function — the export engine |
-| `README.md` | This document |
+| `pblexport.exe`, `pblexport.xml` | Ready-to-run tool and its runtime path |
+| `pblexport.sra` | Application object: reads the command line, or opens the window when there are no arguments |
+| `w_pblexport.srw` | The window that asks for the POS path and the POS export path |
+| `f_export_pbls.srf` | Global function: the export engine |
+| `n_pblexport_dir.sru` | Lists files in a folder (Windows `FindFirstFile`) |
+| `s_pblexport_finddata.srs` | Structure used by `n_pblexport_dir` |
+| `pblexport.pbl`, `.pbt`, `.pbw` | The PowerBuilder library, target and workspace |
+
+### Rebuilding the exe after a code change
+
+Open `pblexport.pbw` in PowerBuilder 2019, import the changed source files into `pblexport.pbl`
+in this order: `s_pblexport_finddata.srs`, `n_pblexport_dir.sru`, `f_export_pbls.srf`,
+`w_pblexport.srw`, `pblexport.sra`. Then do a full build and deploy a 32-bit Pcode executable named `pblexport.exe`.
+
+---
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---------|-----|
+| Nothing happens, no log | The PB runtime was not found. Check the path in `pblexport.xml`. |
+| `ERROR Folder or target not found` in the log | The first argument is not an existing folder or `.pbt`. Quote paths that contain spaces. |
+| `ERROR No .pbl found` | The folder has no `.pbt` with a `LibList` and no `.pbl` files. |
+| `MISSING <path>` lines | A PBL named in the `LibList` is not on disk; the rest are still exported. |
+| `FAILED <object>` lines | PowerBuilder could not export that object; the rest are still exported. |
 
 *Author: Noaman*
